@@ -35,7 +35,8 @@ class DownloadFileThread extends Thread {
     private AbstractRipper observer;
     private int retries;
     private Boolean getFileExtFromMIME;
-
+    private InputStream bis = null;
+    private OutputStream fos = null;
     private final int TIMEOUT;
 
     public DownloadFileThread(URL url, File saveAs, AbstractRipper observer, Boolean getFileExtFromMIME) {
@@ -63,197 +64,71 @@ class DownloadFileThread extends Thread {
      */
     public void run() {
         // First thing we make sure the file name doesn't have any illegal chars in it
-        saveAs = new File(
-                saveAs.getParentFile().getAbsolutePath() + File.separator + Utils.sanitizeSaveAs(saveAs.getName()));
+        saveAs = new File(saveAs.getParentFile().getAbsolutePath() + File.separator + Utils.sanitizeSaveAs(saveAs.getName()));
         long fileSize = 0;
         int bytesTotal = 0;
         int bytesDownloaded = 0;
-        if (saveAs.exists() && observer.tryResumeDownload()) {
-            fileSize = saveAs.length();
-        }
-        try {
-            observer.stopCheck();
-        } catch (IOException e) {
-            observer.downloadErrored(url, Utils.getLocalizedString("download.interrupted"));
-            return;
-        }
-        if (saveAs.exists() && !observer.tryResumeDownload() && !getFileExtFromMIME
-                || Utils.fuzzyExists(new File(saveAs.getParent()), saveAs.getName()) && getFileExtFromMIME
-                        && !observer.tryResumeDownload()) {
+        fileSize = getFileSize(fileSize);
+
+        if (checkInterrupt()) return;
+
+        if (checkFileExist() || checkFuzzyExist()) {
             if (Utils.getConfigBoolean("file.overwrite", false)) {
-                logger.info("[!] " + Utils.getLocalizedString("deleting.existing.file") + prettySaveAs);
-                saveAs.delete();
+                checkOverWrite();
             } else {
-                logger.info("[!] " + Utils.getLocalizedString("skipping") + " " + url + " -- "
-                        + Utils.getLocalizedString("file.already.exists") + ": " + prettySaveAs);
-                observer.downloadExists(url, saveAs);
+                checkAlreadyExist();
                 return;
             }
         }
+
         URL urlToDownload = this.url;
         boolean redirected = false;
         int tries = 0; // Number of attempts to download
         do {
             tries += 1;
-            InputStream bis = null;
-            OutputStream fos = null;
+            bis = null;
+            fos = null;
             try {
                 logger.info("    Downloading file: " + urlToDownload + (tries > 0 ? " Retry #" + tries : ""));
                 observer.sendUpdate(STATUS.DOWNLOAD_STARTED, url.toExternalForm());
 
                 // Setup HTTP request
                 HttpURLConnection huc;
-                if (this.url.toString().startsWith("https")) {
-                    huc = (HttpsURLConnection) urlToDownload.openConnection();
-                } else {
-                    huc = (HttpURLConnection) urlToDownload.openConnection();
-                }
-                huc.setInstanceFollowRedirects(true);
-                // It is important to set both ConnectTimeout and ReadTimeout. If you don't then
-                // ripme will wait forever
-                // for the server to send data after connecting.
-                huc.setConnectTimeout(TIMEOUT);
-                huc.setReadTimeout(TIMEOUT);
-                huc.setRequestProperty("accept", "*/*");
-                if (!referrer.equals("")) {
-                    huc.setRequestProperty("Referer", referrer); // Sic
-                }
-                huc.setRequestProperty("User-agent", AbstractRipper.USER_AGENT);
-                String cookie = "";
-                for (String key : cookies.keySet()) {
-                    if (!cookie.equals("")) {
-                        cookie += "; ";
-                    }
-                    cookie += key + "=" + cookies.get(key);
-                }
-                huc.setRequestProperty("Cookie", cookie);
-                if (observer.tryResumeDownload()) {
-                    if (fileSize != 0) {
-                        huc.setRequestProperty("Range", "bytes=" + fileSize + "-");
-                    }
-                }
-                logger.debug(Utils.getLocalizedString("request.properties") + ": " + huc.getRequestProperties());
-                huc.connect();
-
+                HttpHandler httpHandler = new HttpHandler(url, observer, referrer, cookies, saveAs, fileSize);
+                huc = httpHandler.setConnect();
                 int statusCode = huc.getResponseCode();
-                logger.debug("Status code: " + statusCode);
-                // If the server doesn't allow resuming downloads error out
-                if (statusCode != 206 && observer.tryResumeDownload() && saveAs.exists()) {
-                    // TODO find a better way to handle servers that don't support resuming
-                    // downloads then just erroring out
-                    throw new IOException(Utils.getLocalizedString("server.doesnt.support.resuming.downloads"));
-                }
-                if (statusCode / 100 == 3) { // 3xx Redirect
-                    if (!redirected) {
-                        // Don't increment retries on the first redirect
-                        tries--;
-                        redirected = true;
-                    }
-                    String location = huc.getHeaderField("Location");
-                    urlToDownload = new URL(location);
-                    // Throw exception so download can be retried
-                    throw new IOException("Redirect status code " + statusCode + " - redirect to " + location);
-                }
-                if (statusCode / 100 == 4) { // 4xx errors
-                    logger.error("[!] " + Utils.getLocalizedString("nonretriable.status.code") + " " + statusCode
-                            + " while downloading from " + url);
-                    observer.downloadErrored(url, Utils.getLocalizedString("nonretriable.status.code") + " "
-                            + statusCode + " while downloading " + url.toExternalForm());
-                    return; // Not retriable, drop out.
-                }
-                if (statusCode / 100 == 5) { // 5xx errors
-                    observer.downloadErrored(url, Utils.getLocalizedString("retriable.status.code") + " " + statusCode
-                            + " while downloading " + url.toExternalForm());
-                    // Throw exception so download can be retried
-                    throw new IOException(Utils.getLocalizedString("retriable.status.code") + " " + statusCode);
-                }
-                if (huc.getContentLength() == 503 && urlToDownload.getHost().endsWith("imgur.com")) {
-                    // Imgur image with 503 bytes is "404"
-                    logger.error("[!] Imgur image is 404 (503 bytes long): " + url);
-                    observer.downloadErrored(url, "Imgur image is 404: " + url.toExternalForm());
-                    return;
-                }
-
+                
+                int issueCode = httpHandler.handleRespond(statusCode, redirected);
+                if (issueCode == ISSUE.REDIRECT.getNum()) {
+                    retries -= 1;
+                    redirected = true;
+                } else if (issueCode == ISSUE.CLIENT.getNum() || issueCode == ISSUE.SERVER.getNum() || issueCode == ISSUE.IMGURHTTP.getNum())
+                    return ;
+                
                 // If the ripper is using the bytes progress bar set bytesTotal to
                 // huc.getContentLength()
                 if (observer.useByteProgessBar()) {
                     bytesTotal = huc.getContentLength();
-                    observer.setBytesTotal(bytesTotal);
-                    observer.sendUpdate(STATUS.TOTAL_BYTES, bytesTotal);
-                    logger.debug("Size of file at " + this.url + " = " + bytesTotal + "b");
+                    checkByteTotalSize(bytesTotal);
                 }
 
                 // Save file
-                bis = new BufferedInputStream(huc.getInputStream());
+                saveFile(huc);
 
-                // Check if we should get the file ext from the MIME type
-                if (getFileExtFromMIME) {
-                    String fileExt = URLConnection.guessContentTypeFromStream(bis);
-                    if (fileExt != null) {
-                        fileExt = fileExt.replaceAll("image/", "");
-                        saveAs = new File(saveAs.toString() + "." + fileExt);
-                    } else {
-                        logger.error("Was unable to get content type from stream");
-                        // Try to get the file type from the magic number
-                        byte[] magicBytes = new byte[8];
-                        bis.read(magicBytes, 0, 5);
-                        bis.reset();
-                        fileExt = Utils.getEXTFromMagic(magicBytes);
-                        if (fileExt != null) {
-                            saveAs = new File(saveAs.toString() + "." + fileExt);
-                        } else {
-                            logger.error(Utils.getLocalizedString("was.unable.to.get.content.type.using.magic.number"));
-                            logger.error(
-                                    Utils.getLocalizedString("magic.number.was") + ": " + Arrays.toString(magicBytes));
-                        }
-                    }
-                }
                 // If we're resuming a download we append data to the existing file
-                if (statusCode == 206) {
-                    fos = new FileOutputStream(saveAs, true);
-                } else {
-                    try {
-                        fos = new FileOutputStream(saveAs);
-                    } catch (FileNotFoundException e) {
-                        // We do this because some filesystems have a max name length
-                        if (e.getMessage().contains("File name too long")) {
-                            logger.error("The filename " + saveAs.getName()
-                                    + " is to long to be saved on this file system.");
-                            logger.info("Shortening filename");
-                            String[] saveAsSplit = saveAs.getName().split("\\.");
-                            // Get the file extension so when we shorten the file name we don't cut off the
-                            // file extension
-                            String fileExt = saveAsSplit[saveAsSplit.length - 1];
-                            // The max limit for filenames on Linux with Ext3/4 is 255 bytes
-                            logger.info(saveAs.getName().substring(0, 254 - fileExt.length()) + fileExt);
-                            String filename = saveAs.getName().substring(0, 254 - fileExt.length()) + "." + fileExt;
-                            // We can't just use the new file name as the saveAs because the file name
-                            // doesn't include the
-                            // users save path, so we get the user save path from the old saveAs
-                            saveAs = new File(saveAs.getParentFile().getAbsolutePath() + File.separator + filename);
-                            fos = new FileOutputStream(saveAs);
-                        } else if (saveAs.getAbsolutePath().length() > 259 && Utils.isWindows()) {
-                            // This if is for when the file path has gone above 260 chars which windows does
-                            // not allow
-                            fos = new FileOutputStream(
-                                    Utils.shortenSaveAsWindows(saveAs.getParentFile().getPath(), saveAs.getName()));
-                        }
-                    }
+                try {
+                    checkFileContent(statusCode);
+                } catch (FileNotFoundException e) {
+                    // We do this because some filesystems have a max name length
+                    checkFileProblem(e);
                 }
+
+                // If this is a test rip we skip large downloads
                 byte[] data = new byte[1024 * 256];
                 int bytesRead;
-                boolean shouldSkipFileDownload = huc.getContentLength() / 1000000 >= 10 && AbstractRipper.isThisATest();
-                // If this is a test rip we skip large downloads
-                if (shouldSkipFileDownload) {
-                    logger.debug("Not downloading whole file because it is over 10mb and this is a test");
-                } else {
+                if (!checkTestRip(huc)) {
                     while ((bytesRead = bis.read(data)) != -1) {
-                        try {
-                            observer.stopCheck();
-                        } catch (IOException e) {
-                            observer.downloadErrored(url, Utils.getLocalizedString("download.interrupted"));
-                            return;
-                        }
+                        if (checkInterrupt()) return;
                         fos.write(data, 0, bytesRead);
                         if (observer.useByteProgessBar()) {
                             bytesDownloaded += bytesRead;
@@ -262,8 +137,10 @@ class DownloadFileThread extends Thread {
                         }
                     }
                 }
+
                 bis.close();
                 fos.close();
+
                 break; // Download successful: break out of infinite loop
             } catch (SocketTimeoutException timeoutEx) {
                 // Handle the timeout
@@ -291,19 +168,10 @@ class DownloadFileThread extends Thread {
 
             }finally {
                 // Close any open streams
-                try {
-                    if (bis != null) {
-                        bis.close();
-                    }
-                } catch (IOException e) {
-                }
-                try {
-                    if (fos != null) {
-                        fos.close();
-                    }
-                } catch (IOException e) {
-                }
+                closeStream(bis);
+                closeStream(fos);
             }
+            
             if (tries > this.retries) {
                 logger.error("[!] " + Utils.getLocalizedString("exceeded.maximum.retries") + " (" + this.retries
                         + ") for URL " + url);
@@ -315,5 +183,140 @@ class DownloadFileThread extends Thread {
         observer.downloadCompleted(url, saveAs);
         logger.info("[+] Saved " + url + " as " + this.prettySaveAs);
     }
+
+    private static boolean checkTestRip(HttpURLConnection huc) {
+        return huc.getContentLength() / 1000000 >= 10 && AbstractRipper.isThisATest();
+    }
+
+    private void saveFile(HttpURLConnection huc) throws IOException {
+        bis = new BufferedInputStream(huc.getInputStream());
+        // Check if we should get the file ext from the MIME type
+        if (getFileExtFromMIME) {
+            getFileExt(bis);
+        }
+    }
+
+    private void closeStream(Closeable closeable) {
+        if (closeable != null) {
+            try {
+                closeable.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+    
+    private void checkByteTotalSize(int bytesTotal) {
+        observer.setBytesTotal(bytesTotal);
+        observer.sendUpdate(STATUS.TOTAL_BYTES, bytesTotal);
+        logger.debug("Size of file at " + this.url + " = " + bytesTotal + "b");
+    }
+
+    private void checkFileProblem(FileNotFoundException e) throws FileNotFoundException {
+        if (isFileNameTooLong(e)) {
+            fileNameTooLongProblem();
+            fos = new FileOutputStream(saveAs);
+        }else if (isPathLimit()) {
+            // This if is for when the file path has gone above 260 chars which windows does
+            // not allow
+            File parentFile = saveAs.getParentFile();
+            fos = new FileOutputStream(
+                    Utils.shortenSaveAsWindows(parentFile.getPath(), saveAs.getName()));
+        }
+    }
+
+    private void checkFileContent(int statusCode) throws FileNotFoundException {
+        fos = statusCode == ISSUE.NORMAL.getNum()? new FileOutputStream(saveAs, true):new FileOutputStream(saveAs);
+    }
+
+    private boolean isPathLimit() {
+        return saveAs.getAbsolutePath().length() > 259 && Utils.isWindows();
+    }
+
+    private static boolean isFileNameTooLong(FileNotFoundException e) {
+        String errorMessage = e.getMessage();
+        return errorMessage.contains("File name too long");
+    }
+
+    private void fileNameTooLongProblem() {
+        logger.error("The filename " + saveAs.getName()
+                + " is to long to be saved on this file system.");
+        logger.info("Shortening filename");
+        getUserSavePath();
+    }
+
+    private void getUserSavePath() {
+        String[] saveAsSplit = saveAs.getName().split("\\.");
+        // Get the file extension so when we shorten the file name we don't cut off the
+        // file extension
+        String fileExt = saveAsSplit[saveAsSplit.length - 1];
+        // The max limit for filenames on Linux with Ext3/4 is 255 bytes
+        logger.info(saveAs.getName().substring(0, 254 - fileExt.length()) + fileExt);
+        String filename = saveAs.getName().substring(0, 254 - fileExt.length()) + "." + fileExt;
+        // We can't just use the new file name as the saveAs because the file name
+        // doesn't include the
+        // users save path, so we get the user save path from the old saveAs
+        saveAs = new File(saveAs.getParentFile().getAbsolutePath() + File.separator + filename);
+    }
+
+    private void getFileExt(InputStream bis) throws IOException {
+        String fileExt = URLConnection.guessContentTypeFromStream(bis);
+        if (fileExt != null) {
+            fileExt = fileExt.replaceAll("image/", "");
+            saveAs = new File(saveAs.toString() + "." + fileExt);
+        } else {
+            logger.error("Was unable to get content type from stream");
+            // Try to get the file type from the magic number
+            byte[] magicBytes = new byte[8];
+            bis.read(magicBytes, 0, 5);
+            bis.reset();
+            fileExt = Utils.getEXTFromMagic(magicBytes);
+            if (fileExt != null) {
+                saveAs = new File(saveAs.toString() + "." + fileExt);
+            } else {
+                logger.error(Utils.getLocalizedString("was.unable.to.get.content.type.using.magic.number"));
+                logger.error(
+                        Utils.getLocalizedString("magic.number.was") + ": " + Arrays.toString(magicBytes));
+            }
+        }
+    }
+
+    private void checkAlreadyExist() {
+        logger.info("[!] " + Utils.getLocalizedString("skipping") + " " + url + " -- "
+                + Utils.getLocalizedString("file.already.exists") + ": " + prettySaveAs);
+        observer.downloadExists(url, saveAs);
+    }
+
+    private void checkOverWrite() {
+        logger.info("[!] " + Utils.getLocalizedString("deleting.existing.file") + prettySaveAs);
+        saveAs.delete();
+    }
+
+    private boolean checkFuzzyExist() {
+        return Utils.fuzzyExists(new File(saveAs.getParent()), saveAs.getName()) && getFileExtFromMIME
+                && !observer.tryResumeDownload();
+    }
+
+    private boolean checkFileExist() {
+        return saveAs.exists() && !observer.tryResumeDownload() && !getFileExtFromMIME;
+    }
+
+    private boolean checkInterrupt() {
+        try {
+            observer.stopCheck();
+        } catch (IOException e) {
+            observer.downloadErrored(url, Utils.getLocalizedString("download.interrupted"));
+            return true;
+        }
+        return false;
+    }
+
+    private long getFileSize(long fileSize) {
+        if (saveAs.exists() && observer.tryResumeDownload()) {
+            fileSize = saveAs.length();
+        }
+        return fileSize;
+    }
+
 
 }
