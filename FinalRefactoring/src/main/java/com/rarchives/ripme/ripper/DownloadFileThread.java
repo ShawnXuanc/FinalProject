@@ -2,17 +2,13 @@ package com.rarchives.ripme.ripper;
 
 import java.io.*;
 import java.net.HttpURLConnection;
-import java.net.SocketTimeoutException;
+import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLConnection;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.ResourceBundle;
 
-import javax.net.ssl.HttpsURLConnection;
-
-import com.rarchives.ripme.ui.MainWindow;
 import org.apache.log4j.Logger;
 import org.jsoup.HttpStatusException;
 
@@ -38,6 +34,10 @@ class DownloadFileThread extends Thread {
     private InputStream bis = null;
     private OutputStream fos = null;
     private final int TIMEOUT;
+    private boolean isTimeOut = true;
+    private boolean redirected = false;
+    private URL urlToDownload;
+    HttpURLConnection huc;
 
     public DownloadFileThread(URL url, File saveAs, AbstractRipper observer, Boolean getFileExtFromMIME) {
         super();
@@ -48,6 +48,7 @@ class DownloadFileThread extends Thread {
         this.retries = Utils.getConfigInteger("download.retries", 1);
         this.TIMEOUT = Utils.getConfigInteger("download.timeout", 60000);
         this.getFileExtFromMIME = getFileExtFromMIME;
+
     }
 
     public void setReferrer(String referrer) {
@@ -81,8 +82,8 @@ class DownloadFileThread extends Thread {
             }
         }
 
-        URL urlToDownload = this.url;
-        boolean redirected = false;
+        urlToDownload = this.url;
+        redirected = false;
         int tries = 0; // Number of attempts to download
         do {
             tries += 1;
@@ -93,16 +94,15 @@ class DownloadFileThread extends Thread {
                 observer.sendUpdate(STATUS.DOWNLOAD_STARTED, url.toExternalForm());
 
                 // Setup HTTP request
-                HttpURLConnection huc;
                 HttpHandler httpHandler = new HttpHandler(url, observer, referrer, cookies, saveAs, fileSize);
                 huc = httpHandler.setConnect();
                 int statusCode = huc.getResponseCode();
                 
-                int issueCode = httpHandler.handleRespond(statusCode, redirected);
+                int issueCode = httpHandler.handleRespond(statusCode);
                 if (issueCode == ISSUE.REDIRECT.getNum()) {
-                    retries -= 1;
-                    redirected = true;
-                } else if (issueCode == ISSUE.CLIENT.getNum() || issueCode == ISSUE.SERVER.getNum() || issueCode == ISSUE.IMGURHTTP.getNum())
+                    checkRedirectFirstTime();
+                    reTryDownload(statusCode);
+                } else if (issueCode == ISSUE.CLIENT.getNum() || issueCode == ISSUE.IMGURHTTP.getNum())
                     return ;
                 
                 // If the ripper is using the bytes progress bar set bytesTotal to
@@ -140,48 +140,79 @@ class DownloadFileThread extends Thread {
 
                 bis.close();
                 fos.close();
-
                 break; // Download successful: break out of infinite loop
-            } catch (SocketTimeoutException timeoutEx) {
-                // Handle the timeout
-                logger.error("[!] " + url.toExternalForm() + " timedout!");
-                // Download failed, break out of loop
-                break;
             } catch (HttpStatusException hse) {
-                logger.debug(Utils.getLocalizedString("http.status.exception"), hse);
-                logger.error("[!] HTTP status " + hse.getStatusCode() + " while downloading from " + urlToDownload);
-                if (hse.getStatusCode() == 404 && Utils.getConfigBoolean("errors.skip404", false)) {
-                    observer.downloadErrored(url,
-                            "HTTP status code " + hse.getStatusCode() + " while downloading " + url.toExternalForm());
-                    return;
-                }
-            } catch (IOException e) {
-                logger.debug("IOException", e);
-                logger.error("[!] " + Utils.getLocalizedString("exception.while.downloading.file") + ": " + url + " - "
-                        + e.getMessage());
-            } catch (NullPointerException npe){
-
-                logger.error("[!] " + Utils.getLocalizedString("failed.to.download") + " for URL " + url);
-                observer.downloadErrored(url,
-                        Utils.getLocalizedString("failed.to.download") + " " + url.toExternalForm());
-                return;
-
-            }finally {
+                if (notFindError(hse, urlToDownload)) return;
+            } catch (Exception e) {
+                if (checkExceptionType(e)) return;
+            } finally {
                 // Close any open streams
                 closeStream(bis);
                 closeStream(fos);
             }
-            
-            if (tries > this.retries) {
-                logger.error("[!] " + Utils.getLocalizedString("exceeded.maximum.retries") + " (" + this.retries
-                        + ") for URL " + url);
-                observer.downloadErrored(url,
-                        Utils.getLocalizedString("failed.to.download") + " " + url.toExternalForm());
-                return;
-            }
-        } while (true);
+            if (exceedMaximumRetires(tries)) return;
+
+        } while (isTimeOut);
         observer.downloadCompleted(url, saveAs);
         logger.info("[+] Saved " + url + " as " + this.prettySaveAs);
+    }
+
+    private void reTryDownload(int statusCode) throws IOException {
+        urlToDownload = new URL(huc.getHeaderField("Location"));
+        String location = huc.getHeaderField("Location");
+        throw new IOException("Redirect status code " + statusCode + " - redirect to " + location);
+    }
+
+    private boolean notFindError(HttpStatusException hse, URL urlToDownload) {
+        logger.debug(Utils.getLocalizedString("http.status.exception"), hse);
+        logger.error("[!] HTTP status " + hse.getStatusCode() + " while downloading from " + urlToDownload);
+        if (checkNotFind(hse)) {
+            observer.downloadErrored(url,
+                    "HTTP status code " + hse.getStatusCode() + " while downloading " + url.toExternalForm());
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean checkNotFind(HttpStatusException hse) {
+        return hse.getStatusCode() == ISSUE.NOTFIND.getNum() && Utils.getConfigBoolean("errors.skip404", false);
+    }
+
+    private boolean checkExceptionType(Exception e) {
+        if (e.getMessage().contains("IOException")){
+            logger.debug("IOException", e);
+            logger.error("[!] " + Utils.getLocalizedString("exception.while.downloading.file") + ": " + url + " - "
+                    + e.getMessage());
+        }
+        if (e.getMessage().contains("NullPointerException")) {
+            logger.error("[!] " + Utils.getLocalizedString("failed.to.download") + " for URL " + url);
+            observer.downloadErrored(url,
+                    Utils.getLocalizedString("failed.to.download") + " " + url.toExternalForm());
+            return true;
+        }
+        if (e.getMessage().contains("SocketTimeoutException")){
+            logger.error("[!] " + url.toExternalForm() + " timedout!");
+            isTimeOut = false;
+        }
+        return false;
+    }
+
+    private void checkRedirectFirstTime() {
+        if (!redirected) {
+            retries -= 1;
+            redirected = true;
+        }
+    }
+
+    private boolean exceedMaximumRetires(int tries) {
+        if (tries > this.retries) {
+            logger.error("[!] " + Utils.getLocalizedString("exceeded.maximum.retries") + " (" + this.retries
+                    + ") for URL " + url);
+            observer.downloadErrored(url,
+                    Utils.getLocalizedString("failed.to.download") + " " + url.toExternalForm());
+            return true;
+        }
+        return false;
     }
 
     private static boolean checkTestRip(HttpURLConnection huc) {

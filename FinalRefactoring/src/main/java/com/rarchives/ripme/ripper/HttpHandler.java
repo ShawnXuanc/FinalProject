@@ -20,8 +20,7 @@ public class HttpHandler {
     private final int TIMEOUT;
     private long fileSize;
     private File saveAs;
-
-
+    private ErrorCodeHandlerSelector selector;
 
     public HttpHandler(URL url, AbstractRipper observer, String referrer, Map<String, String> cookies, File saveAs, long fileSize) throws IOException {
         this.url = url;
@@ -33,7 +32,6 @@ public class HttpHandler {
         this.cookies = cookies;
         setConnect();
     }
-
 
     public HttpURLConnection setConnect() throws IOException {
         initHttpURLConnection();
@@ -75,7 +73,7 @@ public class HttpHandler {
         huc.setRequestProperty("User-agent", AbstractRipper.USER_AGENT);
     }
 
-    public int handleRespond(int statusCode, boolean redirected) throws IOException {
+    public int handleRespond(int statusCode) throws Exception {
         // 這邊之後要用polymorphism重構
         int action = ISSUE.NORMAL.getNum();
         logger.debug("Status code: " + statusCode);
@@ -84,22 +82,9 @@ public class HttpHandler {
             throw new IOException(Utils.getLocalizedString("server.doesnt.support.resuming.downloads"));
         }
 
+        selector = new ErrorCodeHandlerSelector(statusCode,observer,saveAs,huc,url);
         int errorCode = statusCode / 100;
-        if (errorCode == ISSUE.REDIRECT.getNum()) { // 3xx Redirect
-            // Don't increment retries on the first redirect
-            action = !redirected ? ISSUE.REDIRECT.getNum() : ISSUE.NORMAL.getNum();
-            redirectError(statusCode);
-        }
-
-        if (errorCode == ISSUE.CLIENT.getNum()) { // 4xx errors
-            clientError(statusCode);
-            // Not retriable, drop out.
-            action = ISSUE.CLIENT.getNum();
-        }
-
-        if (errorCode == ISSUE.SERVER.getNum()) { // 5xx errors
-            serverError(statusCode);
-        }
+        action = selector.select(errorCode);
 
         if (huc.getContentLength() == ISSUE.IMGURHTTP.getNum() && urlToDownload.getHost().endsWith("imgur.com")) {
             imgurError();
@@ -127,13 +112,4 @@ public class HttpHandler {
         observer.downloadErrored(url, Utils.getLocalizedString("nonretriable.status.code") + " "
                 + statusCode + " while downloading " + url.toExternalForm());
     }
-
-    private void redirectError(int statusCode) throws IOException {
-        String location = huc.getHeaderField("Location");
-        urlToDownload = new URL(location);
-        // Throw exception so download can be retried
-        throw new IOException("Redirect status code " + statusCode + " - redirect to " + location);
-    }
-
-
 }
