@@ -72,14 +72,24 @@ public class ImgurRipper extends AlbumRipper {
     }
 
     public URL sanitizeURL(URL url) throws MalformedURLException {
+        String u = removeFragment(url);
+        u = replaceProblem(u);
+        return new URL(u);
+    }
+
+    private static String replaceProblem(String u) {
+        u = u.replace("imgur.com/gallery/", "imgur.com/a/");
+        u = u.replace("https?://m\\.imgur\\.com", "http://imgur.com");
+        u = u.replace("https?://i\\.imgur\\.com", "http://imgur.com");
+        return u;
+    }
+
+    private static String removeFragment(URL url) {
         String u = url.toExternalForm();
         if (u.indexOf('#') >= 0) {
             u = u.substring(0, u.indexOf('#'));
         }
-        u = u.replace("imgur.com/gallery/", "imgur.com/a/");
-        u = u.replace("https?://m\\.imgur\\.com", "http://imgur.com");
-        u = u.replace("https?://i\\.imgur\\.com", "http://imgur.com");
-        return new URL(u);
+        return u;
     }
 
     public String getAlbumTitle(URL url) throws MalformedURLException {
@@ -90,61 +100,13 @@ public class ImgurRipper extends AlbumRipper {
                 if (albumDoc == null) {
                     albumDoc = Http.url(url).get();
                 }
-
-                Elements elems = null;
-
-                /*
-                // TODO: Add config option for including username in album title.
-                // It's possible a lot of users would not be interested in that info.
-                String user = null;
-                elems = albumDoc.select(".post-account");
-                if (elems.size() > 0) {
-                    Element postAccount = elems.get(0);
-                    if (postAccount != null) {
-                        user = postAccount.text();
-                    }
-                }
-                */
-
                 String title = null;
                 final String defaultTitle1 = "Imgur: The most awesome images on the Internet";
                 final String defaultTitle2 = "Imgur: The magic of the Internet";
-                LOGGER.info("Trying to get album title");
-                elems = albumDoc.select("meta[property=og:title]");
-                if (elems != null) {
-                    title = elems.attr("content");
-                    LOGGER.debug("Title is " + title);
-                }
+                title = initTitle();
                 // This is here encase the album is unnamed, to prevent
                 // Imgur: The most awesome images on the Internet from being added onto the album name
-                if (title.contains(defaultTitle1) || title.contains(defaultTitle2)) {
-                    LOGGER.debug("Album is untitled or imgur is returning the default title");
-                    // We set the title to "" here because if it's found in the next few attempts it will be changed
-                    // but if it's nto found there will be no reason to set it later
-                    title = "";
-                    LOGGER.debug("Trying to use title tag to get title");
-                    elems = albumDoc.select("title");
-                    if (elems != null) {
-                        if (elems.text().contains(defaultTitle1) || elems.text().contains(defaultTitle2)) {
-                            LOGGER.debug("Was unable to get album title or album was untitled");
-                        }
-                        else {
-                            title = elems.text();
-                        }
-                    }
-                }
-
-                String albumTitle = "imgur_";
-                /*
-                // TODO: Add config option (see above)
-                if (user != null) {
-                    albumTitle += "user_" + user;
-                }
-                */
-                albumTitle += gid;
-                if (title != null) {
-                    albumTitle += "_" + title;
-                }
+                String albumTitle = buildAlbumTitle(title, defaultTitle1, defaultTitle2, gid);
 
                 return albumTitle;
             } catch (IOException e) {
@@ -153,6 +115,52 @@ public class ImgurRipper extends AlbumRipper {
         }
         return getHost() + "_" + gid;
     }
+
+    private String buildAlbumTitle(String title, String defaultTitle1, String defaultTitle2, String gid) {
+        Elements elems;
+        if (checkTitle(title, defaultTitle1, defaultTitle2)) {
+            LOGGER.debug("Album is untitled or imgur is returning the default title");
+            // We set the title to "" here because if it's found in the next few attempts it will be changed
+            // but if it's nto found there will be no reason to set it later
+            title = "";
+            LOGGER.debug("Trying to use title tag to get title");
+            elems = albumDoc.select("title");
+            if (elems != null && !checkElems(elems, defaultTitle1, defaultTitle2)) {
+                title = elems.text();
+            } else {
+                LOGGER.debug("Was unable to get album title or album was untitled");
+            }
+        }
+
+        String albumTitle = "imgur_";
+
+        albumTitle += gid;
+        if (title != null) {
+            albumTitle += "_" + title;
+        }
+        return albumTitle;
+    }
+
+    private static boolean checkTitle(String title, String defaultTitle1, String defaultTitle2) {
+        return title.contains(defaultTitle1) || title.contains(defaultTitle2);
+    }
+
+    private static boolean checkElems(Elements elems, String defaultTitle1, String defaultTitle2) {
+        return checkTitle(elems.text(), defaultTitle1, defaultTitle2);
+    }
+
+    private String initTitle() {
+        String title = null;
+        Elements elems;
+        LOGGER.info("Trying to get album title");
+        elems = albumDoc.select("meta[property=og:title]");
+        if (elems != null) {
+            title = elems.attr("content");
+            LOGGER.debug("Title is " + title);
+        }
+        return title;
+    }
+
 
     @Override
     public void rip() throws IOException {
