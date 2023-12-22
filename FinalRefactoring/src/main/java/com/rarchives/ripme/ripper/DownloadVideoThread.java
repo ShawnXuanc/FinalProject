@@ -1,13 +1,10 @@
 package com.rarchives.ripme.ripper;
 
-import java.io.BufferedInputStream;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.HashMap;
+import java.util.Map;
 
 import javax.net.ssl.HttpsURLConnection;
 
@@ -29,7 +26,8 @@ class DownloadVideoThread extends Thread {
     private String prettySaveAs;
     private AbstractRipper observer;
     private int retries;
-
+    private String referrer = "";
+    private Map<String, String> cookies = new HashMap<>();
     public DownloadVideoThread(URL url, File saveAs, AbstractRipper observer) {
         super();
         this.url = url;
@@ -44,24 +42,14 @@ class DownloadVideoThread extends Thread {
      * Notifies observers upon completion/error/warn.
      */
     public void run() {
-        try {
-            observer.stopCheck();
-        } catch (IOException e) {
-            observer.downloadErrored(url, "Download interrupted");
-            return;
-        }
+        if (checkStop()) return;
+
         if (saveAs.exists()) {
-            if (Utils.getConfigBoolean("file.overwrite", false)) {
-                logger.info("[!] Deleting existing file" + prettySaveAs);
-                saveAs.delete();
-            } else {
-                logger.info("[!] Skipping " + url + " -- file already exists: " + prettySaveAs);
-                observer.downloadExists(url, saveAs);
-                return;
-            }
+            if (checkFileCondition()) return;
         }
 
         int bytesTotal, bytesDownloaded = 0;
+
         try {
             bytesTotal = getTotalBytes(this.url);
         } catch (IOException e) {
@@ -69,12 +57,13 @@ class DownloadVideoThread extends Thread {
             observer.downloadErrored(this.url, "Failed to get file size of " + this.url);
             return;
         }
-        observer.setBytesTotal(bytesTotal);
-        observer.sendUpdate(STATUS.TOTAL_BYTES, bytesTotal);
-        logger.debug("Size of file at " + this.url + " = " + bytesTotal + "b");
+
+        updateByte(bytesTotal);
 
         int tries = 0; // Number of attempts to download
         do {
+            long fileSize = 0;
+            fileSize = getFileSize(fileSize);
             InputStream bis = null; OutputStream fos = null;
             byte[] data = new byte[1024 * 256];
             int bytesRead;
@@ -83,31 +72,14 @@ class DownloadVideoThread extends Thread {
                 observer.sendUpdate(STATUS.DOWNLOAD_STARTED, url.toExternalForm());
 
                 // Setup HTTP request
-                HttpURLConnection huc;
-                if (this.url.toString().startsWith("https")) {
-                    huc = (HttpsURLConnection) this.url.openConnection();
-                }
-                else {
-                    huc = (HttpURLConnection) this.url.openConnection();
-                }
-                huc.setInstanceFollowRedirects(true);
-                huc.setConnectTimeout(0); // Never timeout
-                huc.setRequestProperty("accept",  "*/*");
-                huc.setRequestProperty("Referer", this.url.toExternalForm()); // Sic
-                huc.setRequestProperty("User-agent", AbstractRipper.USER_AGENT);
-                tries += 1;
-                logger.debug("Request properties: " + huc.getRequestProperties().toString());
-                huc.connect();
+                HttpHandler connect = new HttpHandler(url, observer, referrer, cookies, saveAs, fileSize);
+                HttpURLConnection huc = connect.getConnection();
+
                 // Check status code
                 bis = new BufferedInputStream(huc.getInputStream());
                 fos = new FileOutputStream(saveAs);
                 while ( (bytesRead = bis.read(data)) != -1) {
-                    try {
-                        observer.stopCheck();
-                    } catch (IOException e) {
-                        observer.downloadErrored(url, "Download interrupted");
-                        return;
-                    }
+                    if (checkStop()) return;
                     fos.write(data, 0, bytesRead);
                     bytesDownloaded += bytesRead;
                     observer.setBytesCompleted(bytesDownloaded);
@@ -120,23 +92,61 @@ class DownloadVideoThread extends Thread {
                 logger.error("[!] Exception while downloading file: " + url + " - " + e.getMessage(), e);
             } finally {
                 // Close any open streams
-                try {
-                    if (bis != null) { bis.close(); }
-                } catch (IOException e) { }
-                try {
-                    if (fos != null) { fos.close(); }
-                } catch (IOException e) { }
+                closeStream(bis);
+                closeStream(fos);
             }
-            if (tries > this.retries) {
-                logger.error("[!] Exceeded maximum retries (" + this.retries + ") for URL " + url);
-                observer.downloadErrored(url, "Failed to download " + url.toExternalForm());
-                return;
-            }
+            if (exceedMaximumRetries(tries)) return;
         } while (true);
         observer.downloadCompleted(url, saveAs);
         logger.info("[+] Saved " + url + " as " + this.prettySaveAs);
     }
 
+    private void updateByte(int bytesTotal) {
+        observer.setBytesTotal(bytesTotal);
+        observer.sendUpdate(STATUS.TOTAL_BYTES, bytesTotal);
+        logger.debug("Size of file at " + this.url + " = " + bytesTotal + "b");
+    }
+
+    private boolean checkFileCondition() {
+        if (Utils.getConfigBoolean("file.overwrite", false)) {
+            logger.info("[!] Deleting existing file" + prettySaveAs);
+            saveAs.delete();
+        } else {
+            logger.info("[!] Skipping " + url + " -- file already exists: " + prettySaveAs);
+            observer.downloadExists(url, saveAs);
+            return true;
+        }
+        return false;
+    }
+
+    private boolean checkStop() {
+        try {
+            observer.stopCheck();
+        } catch (IOException e) {
+            observer.downloadErrored(url, "Download interrupted");
+            return true;
+        }
+        return false;
+    }
+
+    private boolean exceedMaximumRetries(int tries) {
+        if (tries > this.retries) {
+            logger.error("[!] Exceeded maximum retries (" + this.retries + ") for URL " + url);
+            observer.downloadErrored(url, "Failed to download " + url.toExternalForm());
+            return true;
+        }
+        return false;
+    }
+
+    private void closeStream(Closeable closeable) {
+        if (closeable != null) {
+            try {
+                closeable.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
     /**
      * @param url
      *      Target URL
@@ -152,4 +162,10 @@ class DownloadVideoThread extends Thread {
         return conn.getContentLength();
     }
 
+    private long getFileSize(long fileSize) {
+        if (saveAs.exists() && observer.tryResumeDownload()) {
+            fileSize = saveAs.length();
+        }
+        return fileSize;
+    }
 }

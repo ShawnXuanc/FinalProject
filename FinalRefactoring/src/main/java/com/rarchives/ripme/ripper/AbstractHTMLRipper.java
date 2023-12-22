@@ -146,13 +146,7 @@ public abstract class AbstractHTMLRipper extends AbstractRipper {
                         LOGGER.debug("Getting description from " + textURL);
                         String[] tempDesc = getDescription(textURL,doc);
                         if (tempDesc != null) {
-                            if (Utils.getConfigBoolean("file.overwrite", false) || !(new File(
-                                    workingDir.getCanonicalPath()
-                                            + ""
-                                            + File.separator
-                                            + getPrefix(index)
-                                            + (tempDesc.length > 1 ? tempDesc[1] : fileNameFromURL(new URL(textURL)))
-                                            + ".txt").exists())) {
+                            if (isOverWrite(textURL, index, tempDesc)) {
                                 LOGGER.debug("Got description from " + textURL);
                                 saveText(new URL(textURL), "", tempDesc[0], textindex, (tempDesc.length > 1 ? tempDesc[1] : fileNameFromURL(new URL(textURL))));
                                 sleep(descSleepTime());
@@ -185,7 +179,17 @@ public abstract class AbstractHTMLRipper extends AbstractRipper {
         }
         waitForThreads();
     }
-    
+
+    private boolean isOverWrite(String textURL, int index, String[] tempDesc) throws IOException {
+        return Utils.getConfigBoolean("file.overwrite", false) || !(new File(
+                workingDir.getCanonicalPath()
+                        + ""
+                        + File.separator
+                        + getPrefix(index)
+                        + (tempDesc.length > 1 ? tempDesc[1] : fileNameFromURL(new URL(textURL)))
+                        + ".txt").exists());
+    }
+
     /**
      * Gets the file name from the URL
      * @param url 
@@ -197,10 +201,14 @@ public abstract class AbstractHTMLRipper extends AbstractRipper {
         String saveAs = url.toExternalForm();
         if (saveAs.substring(saveAs.length() - 1) == "/") { saveAs = saveAs.substring(0,saveAs.length() - 1) ;}
         saveAs = saveAs.substring(saveAs.lastIndexOf('/')+1);
-        if (saveAs.indexOf('?') >= 0) { saveAs = saveAs.substring(0, saveAs.indexOf('?')); }
-        if (saveAs.indexOf('#') >= 0) { saveAs = saveAs.substring(0, saveAs.indexOf('#')); }
-        if (saveAs.indexOf('&') >= 0) { saveAs = saveAs.substring(0, saveAs.indexOf('&')); }
-        if (saveAs.indexOf(':') >= 0) { saveAs = saveAs.substring(0, saveAs.indexOf(':')); }
+
+        String[] removeC = {"?", "#", "&", ":"};
+        for (String c : removeC) {
+            int index = saveAs.indexOf(c);
+            if (index >= 0) {
+                saveAs = saveAs.substring(0, index);
+            }
+        }
         return saveAs;
     }
     /**
@@ -294,15 +302,11 @@ public abstract class AbstractHTMLRipper extends AbstractRipper {
      */
     public boolean addURLToDownload(URL url, File saveAs, String referrer, Map<String,String> cookies, Boolean getFileExtFromMIME) {
             // Only download one file if this is a test.
-        if (super.isThisATest() &&
-                (itemsPending.size() > 0 || itemsCompleted.size() > 0 || itemsErrored.size() > 0)) {
+        if (isATest()) {
             stop();
             return false;
         }
-        if (!allowDuplicates()
-                && ( itemsPending.containsKey(url)
-                  || itemsCompleted.containsKey(url)
-                  || itemsErrored.containsKey(url) )) {
+        if (isDuplicated(url)) {
             // Item is already downloaded/downloading, skip it.
             LOGGER.info("[!] Skipping " + url + " -- already attempted: " + Utils.removeCWD(saveAs));
             return false;
@@ -310,27 +314,47 @@ public abstract class AbstractHTMLRipper extends AbstractRipper {
         if (Utils.getConfigBoolean("urls_only.save", false)) {
             // Output URL to file
             String urlFile = this.workingDir + File.separator + "urls.txt";
-            try (FileWriter fw = new FileWriter(urlFile, true)) {
-                fw.write(url.toExternalForm());
-                fw.write(System.lineSeparator());
-                itemsCompleted.put(url, new File(urlFile));
-            } catch (IOException e) {
-                LOGGER.error("Error while writing to " + urlFile, e);
-            }
+            wirteFile(url, urlFile);
         }
         else {
-            itemsPending.put(url, saveAs);
-            DownloadFileThread dft = new DownloadFileThread(url,  saveAs,  this, getFileExtFromMIME);
-            if (referrer != null) {
-                dft.setReferrer(referrer);
-            }
-            if (cookies != null) {
-                dft.setCookies(cookies);
-            }
-            threadPool.addThread(dft);
+            addToTreadPool(url, saveAs, referrer, cookies, getFileExtFromMIME);
         }
 
         return true;
+    }
+
+    private void addToTreadPool(URL url, File saveAs, String referrer, Map<String, String> cookies, Boolean getFileExtFromMIME) {
+        itemsPending.put(url, saveAs);
+        DownloadFileThread dft = new DownloadFileThread(url, saveAs,  this, getFileExtFromMIME);
+        if (referrer != null) {
+            dft.setReferrer(referrer);
+        }
+        if (cookies != null) {
+            dft.setCookies(cookies);
+        }
+        threadPool.addThread(dft);
+    }
+
+    private void wirteFile(URL url, String urlFile) {
+        try (FileWriter fw = new FileWriter(urlFile, true)) {
+            fw.write(url.toExternalForm());
+            fw.write(System.lineSeparator());
+            itemsCompleted.put(url, new File(urlFile));
+        } catch (IOException e) {
+            LOGGER.error("Error while writing to " + urlFile, e);
+        }
+    }
+
+    private boolean isATest() {
+        return super.isThisATest() &&
+                (itemsPending.size() > 0 || itemsCompleted.size() > 0 || itemsErrored.size() > 0);
+    }
+
+    private boolean isDuplicated(URL url) {
+        return !allowDuplicates()
+                && (itemsPending.containsKey(url)
+                || itemsCompleted.containsKey(url)
+                || itemsErrored.containsKey(url));
     }
 
     @Override
@@ -431,23 +455,39 @@ public abstract class AbstractHTMLRipper extends AbstractRipper {
             path += File.separator;
         }
         String title;
+
+        title = setTitle();
+        LOGGER.debug("Using album title '" + title + "'");
+
+        path = setPath(title, path);
+
+        this.workingDir = new File(path);
+        checkFileDirExist();
+        LOGGER.debug("Set working directory to: " + this.workingDir);
+    }
+
+    private void checkFileDirExist() {
+        if (!this.workingDir.exists()) {
+            LOGGER.info("[+] Creating directory: " + Utils.removeCWD(this.workingDir));
+            this.workingDir.mkdirs();
+        }
+    }
+
+    private String setTitle() throws MalformedURLException {
+        String title;
         if (Utils.getConfigBoolean("album_titles.save", true)) {
             title = getAlbumTitle(this.url);
         } else {
             title = super.getAlbumTitle(this.url);
         }
-        LOGGER.debug("Using album title '" + title + "'");
+        return title;
+    }
 
+    private static String setPath(String title, String path) {
         title = Utils.filesystemSafe(title);
         path += title;
         path = Utils.getOriginalDirectory(path) + File.separator;   // check for case sensitive (unix only)
-
-        this.workingDir = new File(path);
-        if (!this.workingDir.exists()) {
-            LOGGER.info("[+] Creating directory: " + Utils.removeCWD(this.workingDir));
-            this.workingDir.mkdirs();
-        }
-        LOGGER.debug("Set working directory to: " + this.workingDir);
+        return path;
     }
 
     /**
