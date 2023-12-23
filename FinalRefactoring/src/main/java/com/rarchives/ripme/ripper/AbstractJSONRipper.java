@@ -72,9 +72,7 @@ public abstract class AbstractJSONRipper extends AbstractRipper {
             
             // Remove all but 1 image
             if (isThisATest()) {
-                while (imageURLs.size() > 1) {
-                    imageURLs.remove(1);
-                }
+                removeAdditionImages(imageURLs);
             }
 
             if (imageURLs.isEmpty() && !hasASAPRipping()) {
@@ -110,6 +108,12 @@ public abstract class AbstractJSONRipper extends AbstractRipper {
             getThreadPool().waitForThreads();
         }
         waitForThreads();
+    }
+
+    private static void removeAdditionImages(List<String> imageURLs) {
+        while (imageURLs.size() > 1) {
+            imageURLs.remove(1);
+        }
     }
 
     private boolean isExceedValue() {
@@ -150,6 +154,7 @@ public abstract class AbstractJSONRipper extends AbstractRipper {
             stop();
             return false;
         }
+
         if (isDuplicated(url)) {
             // Item is already downloaded/downloading, skip it.
             LOGGER.info("[!] Skipping " + url + " -- already attempted: " + Utils.removeCWD(saveAs));

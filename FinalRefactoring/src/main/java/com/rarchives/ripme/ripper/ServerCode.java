@@ -2,22 +2,26 @@ package com.rarchives.ripme.ripper;
 
 import com.rarchives.ripme.utils.Utils;
 
-import java.io.File;
-import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
 
+import static com.rarchives.ripme.App.logger;
+
 public class ServerCode extends ErrorCodeHandler {
-    @Override
-    public int errorHandle(int statusCode, AbstractRipper observer, File saveAs, HttpURLConnection huc, URL url) throws Exception {
-        serverError(observer, statusCode, url);
-        return ISSUE.NORMAL.getNum();
+
+    public boolean handleError(AbstractRipper observer, URL urlToDownload, HttpURLConnection huc, int statusCode) throws Exception {
+        codeUrl = urlToDownload;
+        logger.error("[!] " + Utils.getLocalizedString("nonretriable.status.code") + " " + statusCode
+                + " while downloading from " + urlToDownload);
+        observer.downloadErrored(urlToDownload, Utils.getLocalizedString("nonretriable.status.code") + " "
+                + statusCode + " while downloading " + urlToDownload.toExternalForm());
+        return true; // Not retriable, drop out.
     }
 
-    private void serverError(AbstractRipper observer, int statusCode, URL url) throws IOException {
-        observer.downloadErrored(url, Utils.getLocalizedString("retriable.status.code") + " " + statusCode
-                + " while downloading " + url.toExternalForm());
-        // Throw exception so download can be retried
-        throw new IOException(Utils.getLocalizedString("retriable.status.code") + " " + statusCode);
+    @Override
+    public URL getUrlToDownload() {
+        return codeUrl;
     }
 }
+
+

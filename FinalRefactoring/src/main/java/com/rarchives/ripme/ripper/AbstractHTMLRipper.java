@@ -88,24 +88,16 @@ public abstract class AbstractHTMLRipper extends AbstractRipper {
     @Override
     public void rip() throws IOException {
         int index = 0;
-        int textindex = 0;
         LOGGER.info("Retrieving " + this.url);
         sendUpdate(STATUS.LOADING_RESOURCE, this.url.toExternalForm());
         Document doc = getFirstPage();
 
         if (hasQueueSupport() && pageContainsAlbums(this.url)) {
-            List<String> urls = getAlbumsToQueue(doc);
-            for (String url : urls) {
-                MainWindow.addUrlToQueue(url);
-            }
-
-            // We set doc to null here so the while loop below this doesn't fire
-            doc = null;
-            LOGGER.debug("Adding items from " + this.url + " to queue");
+            doc = addUrlToQueue(doc);
         }
 
         while (doc != null) {
-            if (alreadyDownloadedUrls >= Utils.getConfigInteger("history.end_rip_after_already_seen", 1000000000) && !isThisATest()) {
+            if (exceedLimit()) {
                 sendUpdate(STATUS.DOWNLOAD_COMPLETE_HISTORY, "Already seen the last " + alreadyDownloadedUrls + " images ending rip");
                 break;
             }
@@ -114,49 +106,14 @@ public abstract class AbstractHTMLRipper extends AbstractRipper {
             // if not it's done in the following block of code
             if (!hasASAPRipping()) {
                 // Remove all but 1 image
-                if (isThisATest()) {
-                    while (imageURLs.size() > 1) {
-                        imageURLs.remove(1);
-                    }
-                }
-
-                if (imageURLs.isEmpty()) {
-                    throw new IOException("No images found at " + doc.location());
-                }
-
-                for (String imageURL : imageURLs) {
-                    index += 1;
-                    LOGGER.debug("Found image url #" + index + ": " + imageURL);
-                    downloadURL(new URL(imageURL), index);
-                    if (isStopped()) {
-                        break;
-                    }
-                }
+                processImageUrl(imageURLs, doc);
+                index = downloadImage(imageURLs, index);
             }
-            if (hasDescriptionSupport() && Utils.getConfigBoolean("descriptions.save", false)) {
+            
+            if (shouldFetchDescription()) {
                 LOGGER.debug("Fetching description(s) from " + doc.location());
                 List<String> textURLs = getDescriptionsFromPage(doc);
-                if (!textURLs.isEmpty()) {
-                    LOGGER.debug("Found description link(s) from " + doc.location());
-                    for (String textURL : textURLs) {
-                        if (isStopped()) {
-                            break;
-                        }
-                        textindex += 1;
-                        LOGGER.debug("Getting description from " + textURL);
-                        String[] tempDesc = getDescription(textURL,doc);
-                        if (tempDesc != null) {
-                            if (isOverWrite(textURL, index, tempDesc)) {
-                                LOGGER.debug("Got description from " + textURL);
-                                saveText(new URL(textURL), "", tempDesc[0], textindex, (tempDesc.length > 1 ? tempDesc[1] : fileNameFromURL(new URL(textURL))));
-                                sleep(descSleepTime());
-                            } else {
-                                LOGGER.debug("Description from " + textURL + " already exists.");
-                            }
-                        }
-
-                    }
-                }
+                processDescription(textURLs, doc, index);
             }
 
             if (isStopped() || isThisATest()) {
@@ -178,6 +135,81 @@ public abstract class AbstractHTMLRipper extends AbstractRipper {
             getThreadPool().waitForThreads();
         }
         waitForThreads();
+    }
+
+    private void processDescription(List<String> textURLs, Document doc, int index) throws IOException {
+        int textindex = 0;
+        if (!textURLs.isEmpty()) {
+            LOGGER.debug("Found description link(s) from " + doc.location());
+            for (String textURL : textURLs) {
+                if (isStopped()) {
+                    break;
+                }
+                textindex += 1;
+                fetchDescription(textURL, doc, index, textindex);
+            }
+        }
+    }
+
+    private void fetchDescription(String textURL, Document doc, int index, int textindex) throws IOException {
+        LOGGER.debug("Getting description from " + textURL);
+        String[] tempDesc = getDescription(textURL, doc);
+        if (tempDesc != null) {
+            if (isOverWrite(textURL, index, tempDesc)) {
+                LOGGER.debug("Got description from " + textURL);
+                saveText(new URL(textURL), "", tempDesc[0], textindex, (tempDesc.length > 1 ? tempDesc[1] : fileNameFromURL(new URL(textURL))));
+                sleep(descSleepTime());
+            } else {
+                LOGGER.debug("Description from " + textURL + " already exists.");
+            }
+        }
+    }
+
+    private boolean shouldFetchDescription() {
+        return hasDescriptionSupport() && Utils.getConfigBoolean("descriptions.save", false);
+    }
+
+    private static void processImageUrl(List<String> imageURLs, Document doc) throws IOException {
+        if (isThisATest()) {
+            KeepOneImage(imageURLs);
+        }
+
+        if (imageURLs.isEmpty()) {
+            throw new IOException("No images found at " + doc.location());
+        }
+    }
+
+    private int downloadImage(List<String> imageURLs, int index) throws MalformedURLException {
+        for (String imageURL : imageURLs) {
+            index += 1;
+            LOGGER.debug("Found image url #" + index + ": " + imageURL);
+            downloadURL(new URL(imageURL), index);
+            if (isStopped()) {
+                break;
+            }
+        }
+        return index;
+    }
+
+    private static void KeepOneImage(List<String> imageURLs) {
+        while (imageURLs.size() > 1) {
+            imageURLs.remove(1);
+        }
+    }
+
+    private boolean exceedLimit() {
+        return alreadyDownloadedUrls >= Utils.getConfigInteger("history.end_rip_after_already_seen", 1000000000) && !isThisATest();
+    }
+
+    private Document addUrlToQueue(Document doc) {
+        List<String> urls = getAlbumsToQueue(doc);
+        for (String url : urls) {
+            MainWindow.addUrlToQueue(url);
+        }
+        // We set doc to null here so the while loop below this doesn't fire
+        doc = null;
+        LOGGER.debug("Adding items from " + this.url + " to queue");
+        return doc;
     }
 
     private boolean isOverWrite(String textURL, int index, String[] tempDesc) throws IOException {
