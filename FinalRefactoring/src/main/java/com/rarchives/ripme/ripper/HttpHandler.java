@@ -1,5 +1,6 @@
 package com.rarchives.ripme.ripper;
 
+
 import com.rarchives.ripme.utils.Utils;
 import javax.net.ssl.HttpsURLConnection;
 import java.io.File;
@@ -10,19 +11,24 @@ import java.util.Map;
 
 import static com.rarchives.ripme.App.logger;
 
+
+
 public class HttpHandler {
+    URL urlToDownload;
     URL url;
     private HttpURLConnection huc;
     private AbstractRipper observer;
     private String referrer;
     private Map<String, String> cookies;
-    URL urlToDownload;
     private final int TIMEOUT;
     private long fileSize;
     private File saveAs;
-    private ErrorCodeHandlerSelector selector;
+    boolean redirected = false;
+    int tries;
+    // private ErrorCodeHandlerSelector selector;
 
     public HttpHandler(URL url, AbstractRipper observer, String referrer, Map<String, String> cookies, File saveAs, long fileSize) throws IOException {
+        this.urlToDownload = url;
         this.url = url;
         this.observer = observer;
         this.TIMEOUT = Utils.getConfigInteger("download.timeout", 60000);
@@ -30,86 +36,77 @@ public class HttpHandler {
         this.saveAs = saveAs;
         this.fileSize = fileSize;
         this.cookies = cookies;
-        setConnect();
+        initHttpURLConnection();
     }
 
-    public HttpURLConnection setConnect() throws IOException {
-        initHttpURLConnection();
-        String cookie = "";
-        for (String key : cookies.keySet()) {
-            cookie = setCookie(key, cookie);
-        }
-        huc.setRequestProperty("Cookie", cookie);
-        if (resumeDownLoad()) {
+    public HttpURLConnection getConnection() {
+        return huc;
+    }
+
+    public boolean getRedirected() {
+        return redirected;
+    }
+    public int getTries() {
+        return tries;
+    }
+    public void initHttpURLConnection() throws IOException {
+        huc = checkUrlTitle() ? (HttpsURLConnection) urlToDownload.openConnection() : (HttpURLConnection) urlToDownload.openConnection();
+        setConnection();
+        setCookie();
+        if (observer.tryResumeDownload() && fileSize != 0) {
             huc.setRequestProperty("Range", "bytes=" + fileSize + "-");
         }
         logger.debug(Utils.getLocalizedString("request.properties") + ": " + huc.getRequestProperties());
         huc.connect();
-        return huc;
     }
 
-    private boolean resumeDownLoad() {
-        return observer.tryResumeDownload() && fileSize != 0;
+    private void setConnection() {
+        huc.setInstanceFollowRedirects(true);
+        huc.setConnectTimeout(TIMEOUT);
+        huc.setReadTimeout(TIMEOUT);
+        huc.setRequestProperty("accept", "*/*");
+        if (!referrer.isEmpty()) {
+            huc.setRequestProperty("Referer", referrer); // Sic
+        }
+        huc.setRequestProperty("User-agent", AbstractRipper.USER_AGENT);
     }
 
-    private String setCookie(String key, String cookie) {
-        if (!cookie.equals("")) {
+    private void setCookie() {
+        String cookie = "";
+        for (String key : cookies.keySet()) {
+            cookie = getCookie(key, cookie);
+        }
+        huc.setRequestProperty("Cookie", cookie);
+    }
+
+    private String getCookie(String key, String cookie) {
+        if (!cookie.isEmpty()) {
             cookie += "; ";
         }
         cookie += key + "=" + cookies.get(key);
         return cookie;
     }
 
-    private void initHttpURLConnection() throws IOException {
-        urlToDownload = this.url;
-        huc = this.url.toString().startsWith("https")? (HttpsURLConnection) urlToDownload.openConnection():(HttpURLConnection) urlToDownload.openConnection();
-        huc.setInstanceFollowRedirects(true);
-        huc.setConnectTimeout(TIMEOUT);
-        huc.setReadTimeout(TIMEOUT);
-        huc.setRequestProperty("accept", "*/*");
-        if (!referrer.equals("")) {
-            huc.setRequestProperty("Referer", referrer); // Sic
-        }
-        huc.setRequestProperty("User-agent", AbstractRipper.USER_AGENT);
+    private boolean checkUrlTitle() {
+        return this.url.toString().startsWith("https");
     }
 
-    public int handleRespond(int statusCode) throws Exception {
-        // 這邊之後要用polymorphism重構
-        int action = ISSUE.NORMAL.getNum();
+    public boolean handleRespond(int statusCode) throws Exception {
         logger.debug("Status code: " + statusCode);
+        // If the server doesn't allow resuming downloads error out
+        handleDownloadResumption(statusCode);
 
-        if (statusCode != ISSUE.NORMAL.getNum() && observer.tryResumeDownload() && saveAs.exists()) {
+        // ErrorCodeHandlerSelector handler = new ErrorCodeHandlerSelector(observer, huc, url);
+        ErrorCodeHandlerSelector selector = new ErrorCodeHandlerSelector(observer, huc, url);
+
+        urlToDownload = selector.getUrlToDownload();
+        return selector.select(statusCode);
+    }
+
+    private void handleDownloadResumption(int statusCode) throws IOException {
+        if (statusCode != 206 && observer.tryResumeDownload() && saveAs.exists()) {
             throw new IOException(Utils.getLocalizedString("server.doesnt.support.resuming.downloads"));
         }
-
-        selector = new ErrorCodeHandlerSelector(statusCode,observer,saveAs,huc,url);
-        int errorCode = statusCode / 100;
-        action = selector.select(errorCode);
-
-        if (huc.getContentLength() == ISSUE.IMGURHTTP.getNum() && urlToDownload.getHost().endsWith("imgur.com")) {
-            imgurError();
-            action = ISSUE.IMGURHTTP.getNum();
-        }
-        return action;
     }
 
-    private void imgurError() {
-        // Imgur image with 503 bytes is "404"
-        logger.error("[!] Imgur image is 404 (503 bytes long): " + url);
-        observer.downloadErrored(url, "Imgur image is 404: " + url.toExternalForm());
-    }
-
-    private void serverError(int statusCode) throws IOException {
-        observer.downloadErrored(url, Utils.getLocalizedString("retriable.status.code") + " " + statusCode
-                + " while downloading " + url.toExternalForm());
-        // Throw exception so download can be retried
-        throw new IOException(Utils.getLocalizedString("retriable.status.code") + " " + statusCode);
-    }
-
-    private void clientError(int statusCode) {
-        logger.error("[!] " + Utils.getLocalizedString("nonretriable.status.code") + " " + statusCode
-                + " while downloading from " + url);
-        observer.downloadErrored(url, Utils.getLocalizedString("nonretriable.status.code") + " "
-                + statusCode + " while downloading " + url.toExternalForm());
-    }
 }
