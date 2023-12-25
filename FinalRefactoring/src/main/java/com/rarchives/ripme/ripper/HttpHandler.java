@@ -96,7 +96,6 @@ public class HttpHandler {
         // If the server doesn't allow resuming downloads error out
         handleDownloadResumption(statusCode);
 
-        // ErrorCodeHandlerSelector handler = new ErrorCodeHandlerSelector(observer, huc, url);
         ErrorCodeHandlerSelector selector = new ErrorCodeHandlerSelector(observer, huc, url);
 
         urlToDownload = selector.getUrlToDownload();
