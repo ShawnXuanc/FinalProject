@@ -1,6 +1,5 @@
 package com.rarchives.ripme.ripper;
 
-import com.rarchives.ripme.ripper.rippers.ImgurRipper;
 
 import java.net.URL;
 import java.util.regex.Matcher;
@@ -8,8 +7,8 @@ import java.util.regex.Pattern;
 
 public class AlbumGid extends GidHandler{
 
-    public AlbumGid(URL url) {
-        super(url);
+    public AlbumGid() {
+
     }
 
     @Override
@@ -20,5 +19,4 @@ public class AlbumGid extends GidHandler{
         return gid;
     }
 
-    public String buildGid(URL url, String regex) {return null;};
 }
