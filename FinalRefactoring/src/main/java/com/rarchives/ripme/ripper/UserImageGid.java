@@ -6,8 +6,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class UserImageGid extends GidHandler{
-    public UserImageGid(URL url) {
-        super(url);
+    public UserImageGid() {
     }
 
     @Override
@@ -16,5 +15,5 @@ public class UserImageGid extends GidHandler{
         return m.group(1) + "_images";
     }
 
-    public String buildGid(URL url, String regex) {return null;};
+
 }
