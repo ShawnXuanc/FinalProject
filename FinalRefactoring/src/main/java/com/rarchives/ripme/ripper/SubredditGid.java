@@ -6,8 +6,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class SubredditGid extends GidHandler{
-    public SubredditGid(URL url) {
-        super(url);
+    public SubredditGid() {
+
     }
 
     @Override
