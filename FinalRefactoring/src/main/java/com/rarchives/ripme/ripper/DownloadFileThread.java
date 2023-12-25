@@ -90,7 +90,6 @@ class DownloadFileThread extends Thread {
         int tries = 0; // Number of attempts to download
         do {
             tries += 1;
-
             try {
                 logger.info("    Downloading file: " + urlToDownload + (tries > 0 ? " Retry #" + tries : ""));
                 observer.sendUpdate(STATUS.DOWNLOAD_STARTED, url.toExternalForm());
@@ -98,8 +97,6 @@ class DownloadFileThread extends Thread {
                 // fileSize 可以考慮一下獲得方式
                 HttpHandler connect = new HttpHandler(url, observer, referrer, cookies, saveAs, fileSize);
                 HttpURLConnection huc = connect.getConnection();
-
-                // ---------------------------
 
                 int statusCode = huc.getResponseCode();
                 // int statusCode = 503;
