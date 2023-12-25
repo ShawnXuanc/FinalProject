@@ -41,15 +41,15 @@ public class Regex {
 
     public void createHandler() {
         handlerList = Arrays.asList(
-                new AlbumGid(regexUrl),
-                new AlbumGid(regexUrl),
-                new UserGid(regexUrl),
-                new UserImageGid(regexUrl),
-                new UserAlbumGid(regexUrl),
-                new SubredditGid(regexUrl),
-                new SubredditOrImageGid(regexUrl),
-                new SingleImageGid(regexUrl),
-                new SeriesOfImagesGid(regexUrl)
+                new AlbumGid(),
+                new AlbumGid(),
+                new UserGid(),
+                new UserImageGid(),
+                new UserAlbumGid(),
+                new SubredditGid(),
+                new SubredditOrImageGid(),
+                new SingleImageGid(),
+                new SeriesOfImagesGid()
 
         );
     }
@@ -73,3 +73,4 @@ public class Regex {
         return this.gidMatcher;
     }
 }
+
