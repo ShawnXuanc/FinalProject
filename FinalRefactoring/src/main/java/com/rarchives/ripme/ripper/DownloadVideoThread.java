@@ -75,9 +75,9 @@ class DownloadVideoThread extends Thread {
                 HttpHandler connect = new HttpHandler(url, observer, referrer, cookies, saveAs, fileSize);
                 HttpURLConnection huc = connect.getConnection();
 
-                // Check status code
                 bis = new BufferedInputStream(huc.getInputStream());
                 fos = new FileOutputStream(saveAs);
+
                 while ( (bytesRead = bis.read(data)) != -1) {
                     if (checkStop()) return;
                     fos.write(data, 0, bytesRead);
@@ -88,6 +88,7 @@ class DownloadVideoThread extends Thread {
                 bis.close();
                 fos.close();
                 break; // Download successful: break out of infinite loop
+
             } catch (IOException e) {
                 logger.error("[!] Exception while downloading file: " + url + " - " + e.getMessage(), e);
             } finally {
