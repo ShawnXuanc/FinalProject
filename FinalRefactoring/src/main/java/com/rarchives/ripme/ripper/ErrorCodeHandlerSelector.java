@@ -5,6 +5,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.HashMap;
 import java.util.Map;
+import com.rarchives.ripme.ripper.ISSUE.*;
 
 public class ErrorCodeHandlerSelector {
     private Map<Integer, ErrorCodeHandler> selector = new HashMap<>();
@@ -21,16 +22,16 @@ public class ErrorCodeHandlerSelector {
         setSelector();
     }
     private void setSelector() {
-        selector.put(3, new RedirectCode());
-        selector.put(4, new ClientCode());
-        selector.put(5, new ServerCode());
-        selector.put(503, new Imgur404Error());
+        selector.put(ISSUE.REDIRECT.value(), new RedirectCode());
+        selector.put(ISSUE.CLIENT.value(), new ClientCode());
+        selector.put(ISSUE.SERVER.value(), new ServerCode());
+        selector.put(ISSUE.IMGURHTTP.value(), new Imgur404Error());
     }
 
     public boolean select(int statusCode) throws Exception {
         int errorCode = statusCode/100;
-        if (huc.getContentLength() == 503) {
-            errorCode = 503;
+        if (huc.getContentLength() == ISSUE.IMGURHTTP.value()) {
+            errorCode = ISSUE.IMGURHTTP.value();
         }
         ErrorCodeHandler handler = selector.get(errorCode);
         if (handler == null) return false;
@@ -43,3 +44,6 @@ public class ErrorCodeHandlerSelector {
         return urlToDownload;
     }
 }
+
+
+
