@@ -8,8 +8,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class SingleImageGid extends GidHandler {
-    public SingleImageGid(URL url) {
-        super(url);
+    public SingleImageGid() {
     }
 
     @Override
