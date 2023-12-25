@@ -6,8 +6,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class SeriesOfImagesGid extends GidHandler{
-    public SeriesOfImagesGid(URL url) {
-        super(url);
+    public SeriesOfImagesGid() {
+
     }
 
     @Override
@@ -21,5 +21,4 @@ public class SeriesOfImagesGid extends GidHandler{
         return gid.replaceAll(",", "-");
     }
 
-    public String buildGid(URL url, String regex) {return null;};
 }
