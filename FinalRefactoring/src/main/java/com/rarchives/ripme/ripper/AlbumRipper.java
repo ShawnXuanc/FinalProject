@@ -51,71 +51,44 @@ public abstract class AlbumRipper extends AbstractRipper {
      * Queues multiple URLs of single images to download from a single Album URL
      */
     public boolean addURLToDownload(URL url, File saveAs, String referrer, Map<String,String> cookies, Boolean getFileExtFromMIME) {
-
-        if (checkIsTest() || checkDuplicated(url, saveAs)) return false;
-
-        if (checkUrlOnlyFile()) {
-            WriteTheUrlTOFile(url);
+            // Only download one file if this is a test.
+        if (super.isThisATest() &&
+                (itemsPending.size() > 0 || itemsCompleted.size() > 0 || itemsErrored.size() > 0)) {
+            stop();
+            return false;
         }
-        else {
-            enqueueDownloadThread(url, saveAs, referrer, cookies, getFileExtFromMIME);
-        }
-
-        return true;
-    }
-
-    private void enqueueDownloadThread(URL url, File saveAs, String referrer, Map<String, String> cookies, Boolean getFileExtFromMIME) {
-        itemsPending.put(url, saveAs);
-        DownloadFileThread dft = new DownloadFileThread(url, saveAs,  this, getFileExtFromMIME);
-        if (referrer != null) {
-            dft.setReferrer(referrer);
-        }
-        if (cookies != null) {
-            dft.setCookies(cookies);
-        }
-        threadPool.addThread(dft);
-    }
-
-    private void WriteTheUrlTOFile(URL url) {
-        // Output URL to file
-        String urlFile = this.workingDir + File.separator + "urls.txt";
-        try (FileWriter fileWriter = new FileWriter(urlFile, true)) {
-            fileWriter.write(url.toExternalForm());
-            fileWriter.write(System.lineSeparator());
-            itemsCompleted.put(url, new File(urlFile));
-        } catch (IOException e) {
-            LOGGER.error("Error while writing to " + urlFile, e);
-        }
-    }
-
-    private static boolean checkUrlOnlyFile() {
-        return Utils.getConfigBoolean("urls_only.save", false);
-    }
-
-    private boolean checkDuplicated(URL url, File saveAs) {
         if (!allowDuplicates()
                 && ( itemsPending.containsKey(url)
                   || itemsCompleted.containsKey(url)
                   || itemsErrored.containsKey(url) )) {
             // Item is already downloaded/downloading, skip it.
             LOGGER.info("[!] Skipping " + url + " -- already attempted: " + Utils.removeCWD(saveAs));
-            return true;
+            return false;
         }
-        return false;
-    }
-
-    private boolean checkIsTest() {
-        // Only download one file if this is a test.
-        if (super.isThisATest() && (itemsPending.size() > 0 || itemsCompleted.size() > 0 || itemsErrored.size() > 0)) {
-            stop();
-            return true;
+        if (Utils.getConfigBoolean("urls_only.save", false)) {
+            // Output URL to file
+            String urlFile = this.workingDir + File.separator + "urls.txt";
+            try (FileWriter fw = new FileWriter(urlFile, true)) {
+                fw.write(url.toExternalForm());
+                fw.write(System.lineSeparator());
+                itemsCompleted.put(url, new File(urlFile));
+            } catch (IOException e) {
+                LOGGER.error("Error while writing to " + urlFile, e);
+            }
         }
-        return false;
-    }
+        else {
+            itemsPending.put(url, saveAs);
+            DownloadFileThread dft = new DownloadFileThread(url,  saveAs,  this, getFileExtFromMIME);
+            if (referrer != null) {
+                dft.setReferrer(referrer);
+            }
+            if (cookies != null) {
+                dft.setCookies(cookies);
+            }
+            threadPool.addThread(dft);
+        }
 
-    private boolean checkTestCase() {
-        return super.isThisATest() &&
-                (itemsPending.size() > 0 || itemsCompleted.size() > 0 || itemsErrored.size() > 0);
+        return true;
     }
 
     @Override
@@ -145,18 +118,16 @@ public abstract class AlbumRipper extends AbstractRipper {
             return;
         }
         try {
-            postDownloadOperation(url, saveAs);
+            String path = Utils.removeCWD(saveAs);
+            RipStatusMessage msg = new RipStatusMessage(STATUS.DOWNLOAD_COMPLETE, path);
+            itemsPending.remove(url);
+            itemsCompleted.put(url, saveAs);
+            observer.update(this, msg);
+
             checkIfComplete();
         } catch (Exception e) {
             LOGGER.error("Exception while updating observer: ", e);
         }
-    }
-
-    private void postDownloadOperation(URL url, File saveAs) {
-        String path = Utils.removeCWD(saveAs);
-        RipStatusMessage msg = new RipStatusMessage(STATUS.DOWNLOAD_COMPLETE, path);
-        updateErrorFile(url, saveAs);
-        observer.update(this, msg);
     }
 
     @Override
@@ -167,14 +138,11 @@ public abstract class AlbumRipper extends AbstractRipper {
         if (observer == null) {
             return;
         }
-        updateErrorReason(url, reason);
-        observer.update(this, new RipStatusMessage(STATUS.DOWNLOAD_ERRORED, url + " : " + reason));
-        checkIfComplete();
-    }
-
-    private void updateErrorReason(URL url, String reason) {
         itemsPending.remove(url);
         itemsErrored.put(url, reason);
+        observer.update(this, new RipStatusMessage(STATUS.DOWNLOAD_ERRORED, url + " : " + reason));
+
+        checkIfComplete();
     }
 
     @Override
@@ -186,19 +154,12 @@ public abstract class AlbumRipper extends AbstractRipper {
         if (observer == null) {
             return;
         }
-        updateErrorFile(url, file);
-        observer.update(this,new RipStatusMessage(STATUS.DOWNLOAD_WARN, url + " already saved as " + file.getAbsolutePath()));
-        checkIfComplete();
-    }
 
-   private void sendErrorMessage(File file, String s) {
-       RipStatusMessage errorMessage = new RipStatusMessage(STATUS.DOWNLOAD_WARN, url + s + file.getAbsolutePath());
-       observer.update(this,errorMessage);
-   }
-
-    private void updateErrorFile(URL url, File file) {
         itemsPending.remove(url);
         itemsCompleted.put(url, file);
+        observer.update(this, new RipStatusMessage(STATUS.DOWNLOAD_WARN, url + " already saved as " + file.getAbsolutePath()));
+
+        checkIfComplete();
     }
 
     /**
@@ -223,35 +184,28 @@ public abstract class AlbumRipper extends AbstractRipper {
      */
     @Override
     public void setWorkingDir(URL url) throws IOException {
-        String path = createWorkingPath();
-
-        this.workingDir = new File(path);
-        createWorkingDirIfDoesntExist();
-
-        LOGGER.debug("Set working directory to: " + this.workingDir);
-    }
-
-
-    private String createWorkingPath() throws IOException {
         String path = Utils.getWorkingDirectory().getCanonicalPath();
         if (!path.endsWith(File.separator)) {
             path += File.separator;
         }
-
-        String title = Utils.getConfigBoolean("album_titles.save", true) ? getAlbumTitle(this.url) : super.getAlbumTitle(this.url);
+        String title;
+        if (Utils.getConfigBoolean("album_titles.save", true)) {
+            title = getAlbumTitle(this.url);
+        } else {
+            title = super.getAlbumTitle(this.url);
+        }
         LOGGER.debug("Using album title '" + title + "'");
 
         title = Utils.filesystemSafe(title);
-        path = Utils.getOriginalDirectory(path+title) + File.separator;   // check for case sensitive (unix only)
+        path += title;
+        path = Utils.getOriginalDirectory(path) + File.separator;   // check for case sensitive (unix only)
 
-        return path;
-    }
-
-    private void createWorkingDirIfDoesntExist() {
+        this.workingDir = new File(path);
         if (!this.workingDir.exists()) {
             LOGGER.info("[+] Creating directory: " + Utils.removeCWD(this.workingDir));
             this.workingDir.mkdirs();
         }
+        LOGGER.debug("Set working directory to: " + this.workingDir);
     }
 
     /**
@@ -270,12 +224,12 @@ public abstract class AlbumRipper extends AbstractRipper {
      */
     @Override
     public String getStatusText() {
-        StringBuilder strBuilder = new StringBuilder();
-        strBuilder.append(getCompletionPercentage())
+        StringBuilder sb = new StringBuilder();
+        sb.append(getCompletionPercentage())
           .append("% ")
           .append("- Pending: "  ).append(itemsPending.size())
           .append(", Completed: ").append(itemsCompleted.size())
           .append(", Errored: "  ).append(itemsErrored.size());
-        return strBuilder.toString();
+        return sb.toString();
     }
 }
