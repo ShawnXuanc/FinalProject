@@ -7,21 +7,18 @@ import java.net.URL;
 
 public class GidGetter {
     URL gidUrl;
-    URL url;
+    URL Url;
     String gid;
-    Pattern p = null;
-    Matcher m = null;
-    public ALBUM_TYPE albumType;
-    Regex regex = new Regex();
-    List<GidHandler> HandlerList;
-    public HashMap<String, GidHandler> gidMatcher = new HashMap<>();
+    Pattern p;
+    Matcher m ;
+    ALBUM_TYPE albumType;
+    Regex regex;
+    HashMap<String, GidHandler> gidMatcher;
 
-    public GidGetter(URL url, Pattern p, Matcher m) {
-        this.url = url;
-        this.p = p;
-        this.m = m;
-        // gidHandlers = Arrays.asList(new AlbumGid(url, regex.getList().get(0)));
-        gidMatcher.put("^https?://(www\\.|m\\.)?imgur\\.com/(a|gallery)/([a-zA-Z0-9]{5,}).*$", new AlbumGid(url));
+    public GidGetter(URL url) {
+        this.Url = url;
+        regex = new Regex(url);
+        gidMatcher = regex.getMatcher();
     }
 
     public ALBUM_TYPE getGidType() {
@@ -33,31 +30,26 @@ public class GidGetter {
     }
 
     public String getGid() {
-        String urlString = url.toExternalForm();
+        String urlString = Url.toExternalForm();
         Set<String> Keys = gidMatcher.keySet();
-        for (String regex : Keys) {
-            System.out.println(regex);
-            p = Pattern.compile(regex);
+        for (String regexString : Keys) {
+            p = Pattern.compile(regexString);
             m = p.matcher(urlString);
             if (m.matches()) {
-                GidHandler handler = gidMatcher.get(regex);
+                GidHandler handler = gidMatcher.get(regexString);
                 try {
-                    gid = handler.buildGid(url, p, m);
+                    gid = handler.buildGid(Url, p, m);
                     albumType = handler.getType();
                     this.gidUrl = handler.setUrl();
                     return gid;
                 } catch (Exception e) {
-                    System.out.println("EXCEPTION");
+                    System.out.println("not found");
                 }
             }
         }
         return null;
     }
 
-    public void initGidMatcher() {
-        for (String rs : regex.getList()) {
-            System.out.println(rs);
-        }
-    }
-
 }
+
+
