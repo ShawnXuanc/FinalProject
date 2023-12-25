@@ -9,18 +9,17 @@ import java.util.regex.Pattern;
 import java.net.URL;
 
 public abstract class GidHandler {
-    protected Pattern p = null;
-    protected Matcher m = null;
-    public String gid = null;
-    public ALBUM_TYPE gidType = null;
-    protected String urlString;
-    public URL gidUrl = null;
+    protected Pattern p;
+    protected Matcher m;
+    public String gid;
+    public ALBUM_TYPE gidType;
+    public URL gidUrl;
 
-    public GidHandler(URL url) {
+    public GidHandler() {
     }
 
     public abstract String buildGid(URL url, Pattern p, Matcher m) throws Exception;
-    // public abstract String buildGid(URL url, String regex);
+
 
     public URL setUrl( ) {
         return gidUrl;
@@ -30,3 +29,5 @@ public abstract class GidHandler {
         return this.gidType ;
     }
 }
+
+
