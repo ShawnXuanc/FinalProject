@@ -6,8 +6,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class UserAlbumGid extends GidHandler{
-    public UserAlbumGid(URL url) {
-        super(url);
+    public UserAlbumGid() {
+
     }
 
     @Override
