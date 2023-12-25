@@ -7,8 +7,8 @@ import java.util.regex.Pattern;
 
 public class UserGid extends GidHandler{
 
-    public UserGid(URL url) {
-        super(url);
+    public UserGid() {
+
     }
 
     @Override
